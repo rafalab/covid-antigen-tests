@@ -65,5 +65,7 @@ tests <- rbind(all_tests_with_id_molecular, all_tests_with_id_antigens)
 
 ## covert the age range to a factor
 
+## save the object at the end into a directory called rdas. Do no upload these data to GitHub as it will be too big
+
 
 
