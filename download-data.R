@@ -1,18 +1,26 @@
 library(lubridate)
 library(data.table)
+library(jsonlite)
+library(httr)
 
 ## Function to retrieve data from API
 get_bioportal <- function(url){
+  # The message function acts similarly to the print statement 
   message("Downloading query ", url)
+  
+  # setDT converts lists or dataframes into data.table efficiently 
+  # 'jsonlite' contains functions to stream, validate, and prettify JSON data.
+  # fromJSON reads content in JSON format and de-serializes it into R objects 
+  # using key:value pairs.
   setDT(jsonlite::fromJSON(
     rawToChar(
-      httr::GET(url, httr::content_type('application/json'),
-                httr::add_headers('Accept-Enconding'="br"))$content)
+      httr::GET(url, httr::content_type('application/json'), # application/json comes from the api
+                httr::add_headers('Accept-Enconding'="br"))$content) #br is a compression format that uses Brotli algorithm
   ))
 }
 
 first_day <- make_datetime(2020, 3, 12, 0, 0, 0, tz= "America/Puerto_Rico")
-last_day <- now(tz= "America/Puerto_Rico") + days(1)
+last_day <- now(tz= "America/Puerto_Rico") + days(1) # present time plus one day
 
 the_years <- seq(2020, year(today()))
 
@@ -26,7 +34,9 @@ message("Downloading dataset.")
 cases_url <- "https://bioportal.salud.pr.gov/api/administration/reports/orders/basic"
 
 ## Define a temporaty matrix saving the test type, start and end date for query
-tmp <- merge(data.frame(test_type = c("Molecular", "Antigens")), 
+# The merge here duplicates each row in the larger dataframe for as many rows
+# are in the smaller dataframe so that every combination is made
+tmp <- merge(data.frame(test_type = c("Molecular", "Antigens")), # -1 is removing last row
              data.frame(start = head(the_days, -1), end =  tail(the_days,-1)))
 
 ## Define the queries
@@ -39,6 +49,8 @@ queries <- apply(tmp, 1, function(x)
 # Reading and wrangling cases data from database ---------------------------
 message("Reading case data.")
 
+# lapply returns a list of the same length as x. Each element is a result of appplying FUN
+# to the corresponding element of x
 tests <- lapply(queries, get_bioportal)
 tests <- do.call(rbind, tests) |> unique() ##unique removes duplicate rows
 

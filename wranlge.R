@@ -1,5 +1,7 @@
 library(lubridate)
 library(data.table)
+library(forcats)
+library(dplyr)
 
 tests <- readRDS("rdas/raw-tests.rds")
 ## use ymd_hms function to convert dates to dates. Make sure to make the timezone America/Puerto_Rico
@@ -15,6 +17,10 @@ tests <- readRDS("rdas/raw-tests.rds")
 # }
 
 ## RI: In data.table you can use apply the same function to several columns using the .SD (subset of data) symbol
+# .SDcols = cols subsets the data
+# := is the assignment operator
+# Note that we must wrap cols in parentheses () to force data.table 
+# to interpret this as column names, instead of trying to assign a column named cols.
 cols <- c("collectedDate", "reportedDate", "orderCreatedAt", "resultCreatedAt")
 tests[, (cols) := lapply(.SD, ymd_hms, tz= "America/Puerto_Rico"), .SDcols = cols]
 
@@ -44,7 +50,7 @@ tests[, (cols) := lapply(.SD, ymd_hms, tz= "America/Puerto_Rico"), .SDcols = col
 
 ## RI: Using data.table syntax you can write this a bit more succinctly
 ## I also realized that using fct_collapse you can make the operation much faster than
-## using fcast, by changing the factor names rather
+## using fcase, by changing the factor names rather
 ## then each entry separately. 
 tests[, result := factor(tolower(result))] #using to lower in case a difference in case slips in
 tests[, result := 
@@ -70,14 +76,80 @@ cuts <- c(seq(0, 80, 10), Inf)
 labels <- stringr::str_replace(paste(head(cuts, -1), tail(cuts, -1)-1, sep = "-"), "-Inf", "+")
 
 tests[, ageRange := 
-        cut(as.numeric(stringr::str_extract(tests$ageRange, "^\\d+")), cuts, labels = labels, right=FALSE)]
+        cut(as.numeric(stringr::str_extract(tests$ageRange, "^\\d+")), breaks = cuts, labels = labels, right=FALSE)]
 
-## RI: making a region a actor as well to save space
+## RI: making a region a factor as well to save space
+# If we see "N/A" make it NA
 tests[, region := factor(dplyr::na_if(region, "N/A"))]
 
 ### Next tasks: 
-## 1) make sure to review data.table intros. Here is one to start: https://atrebas.github.io/post/2019-03-03-datatable-dplyr/
-## 2) Use data.table approach to count how many tests each individual received. add a column `n` to keep this info 
-## 3) For each individual, create an index dividing the tests into `infections`. Define a new infection anytime you have more than 90 days between positive tests. Use data.table appraoch
+## 1) Make sure to review data.table intros. Here is one to start: https://atrebas.github.io/post/2019-03-03-datatable-dplyr/
+## 2) Use data.table approach to count how many tests each individual received. 
+#  add a column `n` to keep this info  |>
+tests <- tests[, n := .N, by = patientId]
+
+## 3) For each individual, create an index dividing the tests into `infections`. 
+#  Define a new infection anytime you have more than 90 days between positive tests. 
+#  Use data.table approach
+
 ## 4) For each individual, add a column that keeps number of days since last negative test.
+
+positve_day_count <- function(x){
+  # This function returns the number of positive tests outside
+  # of a 90 day window
+  message("positive count started")
+  data <- x # this will be the final data that is modified
+  
+  # filtering on positive cases only
+  x <- x %>% 
+    filter(result == "positive") 
+  
+  count <- 1 # count starts at 1 for the first test
+  while(any(x[, "time_diff"] > 90)){
+    count <- count + 1
+    new_infec_index <- min(which(x[, "time_diff"] > 90))
+    
+    x[, "time_diff"] <- x[, "time_diff"] - as.numeric(x[new_infec_index, "time_diff", drop = TRUE])
+    x <- x[-c(1:new_infec_index), ]
+  }
+  
+  data <- data %>% 
+    mutate(positive_count = count) %>%
+    select(-c(time_diff))
+
+  return(data)
+}
+
+negative_last_count <- function(x){
+  # This function returns the number of days since the last negative test 
+  data <- x # this will be the final data that is modified
+  message("negative count started")
+  # filtering on negative cases only
+  x <- x %>% 
+    filter(result == "negative") 
+  
+  # obtaining the days since the last negative test
+  today <- now(tz= "America/Puerto_Rico")
+  
+  days_n_test <- difftime(today, 
+                          ymd_hms(x[dim(x)[1], "resultCreatedAt", drop = TRUE], tz = "America/Puerto_Rico"),
+                          units = "days")
+  
+  data <- data %>% 
+    mutate(days_n_test = days_n_test) 
+  
+  return(data)
+}
+
+
+tests <- tests %>% 
+  group_by(patientId) %>% 
+  arrange(resultCreatedAt) %>%
+  mutate(time_diff = difftime(resultCreatedAt, resultCreatedAt[1], units = "days")) %>%
+  positve_day_count() %>%
+  negative_last_count() %>%
+  ungroup()
+  
+  
+
 
