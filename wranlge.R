@@ -1,9 +1,10 @@
 library(lubridate)
 library(data.table)
-library(forcats)
-library(dplyr)
+#library(forcats)
+#library(dplyr)
 
 tests <- readRDS("rdas/raw-tests.rds")
+otests <- copy(tests)
 ## use ymd_hms function to convert dates to dates. Make sure to make the timezone America/Puerto_Rico
 ## Tasks: take a look at table(all_tests_with_id$result) and figure out which are positive, which negative,
 ## and which inconclusive. Once you do, use the function fcase to redefine these values so that they are 
@@ -23,7 +24,6 @@ tests <- readRDS("rdas/raw-tests.rds")
 # to interpret this as column names, instead of trying to assign a column named cols.
 cols <- c("collectedDate", "reportedDate", "orderCreatedAt", "resultCreatedAt")
 tests[, (cols) := lapply(.SD, ymd_hms, tz= "America/Puerto_Rico"), .SDcols = cols]
-
 
 
 # # Changing labels to positive, negative, or other
@@ -62,7 +62,9 @@ tests[, result :=
                                            "sars-cov-2 presumptive positive", 
                                            "positive for covid-19", "positive for influenza a and covid-19"),
                               other_level = "other")]
-                              
+##remove others and covert to logical for speed
+tests <- tests[result != "other"]
+tests[, result := result == "positive"]                          
 
 
 # ## covert the age range to a factor
@@ -86,70 +88,112 @@ tests[, region := factor(dplyr::na_if(region, "N/A"))]
 ## 1) Make sure to review data.table intros. Here is one to start: https://atrebas.github.io/post/2019-03-03-datatable-dplyr/
 ## 2) Use data.table approach to count how many tests each individual received. 
 #  add a column `n` to keep this info  |>
-tests <- tests[, n := .N, by = patientId]
+#tests <- tests[, n := .N, by = patientId]
+## RI: apologies, i mean positive tests. 
+## Also not to make it go faster, above, i changed results to a logical and removed "others"
+tests <- tests[, npos := sum(result), keyby = patientId]
+tests <- tests[, nneg := sum(!result), keyby = patientId]
 
 ## 3) For each individual, create an index dividing the tests into `infections`. 
 #  Define a new infection anytime you have more than 90 days between positive tests. 
 #  Use data.table approach
 
+##RI: First we order the entire thing first as this is faster than ordering inside a loop
+
+tests <- tests[order(patientId, collectedDate)]
+
+##RI: then define day since start of pandemic to simplify and measure in days rather than seconds
+
+first_day <- make_date(2020, 3, 12)
+tests[, day := as.numeric(as_date(collectedDate)) - as.numeric(first_day) + 1]
+## RI: keep only tests for which collection day makes sense
+tests <- tests[!is.na(day)]
+tests <- tests[day>=1]
+
+## RI: define a function that computes minium distance between any two positives
+## RI: then clusters infections  into groups
+cluster_infections <- function(x, gap = 60){
+  dist <- outer(x, x, FUN = "-") ##distance between each test
+  dist[upper.tri(dist, diag = TRUE)] <- NA #we only care about future
+  dist <- matrixStats::rowMins(dist, na.rm=TRUE) #take smallest distance for each test
+  return(cumsum(dist >= gap)) #if new infections use new number
+}
+## cluster positive tests into infections
+tests[npos>1 & result, infection := cluster_infections(day), by = patientId]
+tests[npos==1, infection := 1]
+## fill in infection for negative tests
+tests[npos>=1, infection := zoo::na.locf(infection, na.rm = FALSE), by = patientId]
+
 ## 4) For each individual, add a column that keeps number of days since last negative test.
+## RI: use data.table instead of dplyr
 
-positve_day_count <- function(x){
-  # This function returns the number of positive tests outside
-  # of a 90 day window
-  message("positive count started")
-  data <- x # this will be the final data that is modified
-  
-  # filtering on positive cases only
-  x <- x %>% 
-    filter(result == "positive") 
-  
-  count <- 1 # count starts at 1 for the first test
-  while(any(x[, "time_diff"] > 90)){
-    count <- count + 1
-    new_infec_index <- min(which(x[, "time_diff"] > 90))
-    
-    x[, "time_diff"] <- x[, "time_diff"] - as.numeric(x[new_infec_index, "time_diff", drop = TRUE])
-    x <- x[-c(1:new_infec_index), ]
-  }
-  
-  data <- data %>% 
-    mutate(positive_count = count) %>%
-    select(-c(time_diff))
-
-  return(data)
+dist_to_prev_neg <- function(day, result){
+  dist <- outer(day[result], day[!result], FUN = "-")
+  dist[dist<=0] <- NA
+  res <- rep(NA, length(day))
+  res[result] <- matrixStats::rowMins(dist,na.rm=TRUE)
+  res[is.infinite(res)]<-NA
+  return(res)
 }
+tests[npos>0 & nneg >0, dist_prev_neg := dist_to_prev_neg(day, result),
+      by = patientId]
 
-negative_last_count <- function(x){
-  # This function returns the number of days since the last negative test 
-  data <- x # this will be the final data that is modified
-  message("negative count started")
-  # filtering on negative cases only
-  x <- x %>% 
-    filter(result == "negative") 
-  
-  # obtaining the days since the last negative test
-  today <- now(tz= "America/Puerto_Rico")
-  
-  days_n_test <- difftime(today, 
-                          ymd_hms(x[dim(x)[1], "resultCreatedAt", drop = TRUE], tz = "America/Puerto_Rico"),
-                          units = "days")
-  
-  data <- data %>% 
-    mutate(days_n_test = days_n_test) 
-  
-  return(data)
-}
-
-
-tests <- tests %>% 
-  group_by(patientId) %>% 
-  arrange(resultCreatedAt) %>%
-  mutate(time_diff = difftime(resultCreatedAt, resultCreatedAt[1], units = "days")) %>%
-  positve_day_count() %>%
-  negative_last_count() %>%
-  ungroup()
-  
+# positve_day_count <- function(x){
+#   # This function returns the number of positive tests outside
+#   # of a 90 day window
+#   message("positive count started")
+#   data <- x # this will be the final data that is modified
+#   
+#   # filtering on positive cases only
+#   x <- x %>% 
+#     filter(result == "positive") 
+#   
+#   count <- 1 # count starts at 1 for the first test
+#   while(any(x[, "time_diff"] > 90)){
+#     count <- count + 1
+#     new_infec_index <- min(which(x[, "time_diff"] > 90))
+#     
+#     x[, "time_diff"] <- x[, "time_diff"] - as.numeric(x[new_infec_index, "time_diff", drop = TRUE])
+#     x <- x[-c(1:new_infec_index), ]
+#   }
+#   
+#   data <- data %>% 
+#     mutate(positive_count = count) %>%
+#     select(-c(time_diff))
+# 
+#   return(data)
+# }
+# 
+# negative_last_count <- function(x){
+#   # This function returns the number of days since the last negative test 
+#   data <- x # this will be the final data that is modified
+#   message("negative count started")
+#   # filtering on negative cases only
+#   x <- x %>% 
+#     filter(result == "negative") 
+#   
+#   # obtaining the days since the last negative test
+#   today <- now(tz= "America/Puerto_Rico")
+#   
+#   days_n_test <- difftime(today, 
+#                           ymd_hms(x[dim(x)[1], "resultCreatedAt", drop = TRUE], tz = "America/Puerto_Rico"),
+#                           units = "days")
+#   
+#   data <- data %>% 
+#     mutate(days_n_test = days_n_test) 
+#   
+#   return(data)
+# }
+# 
+# 
+# tests <- tests %>% 
+#   group_by(patientId) %>% 
+#   arrange(resultCreatedAt) %>%
+#   mutate(time_diff = difftime(resultCreatedAt, resultCreatedAt[1], units = "days")) %>%
+#   positve_day_count() %>%
+#   negative_last_count() %>%
+#   ungroup()
+#   
   
 
 
