@@ -2,6 +2,11 @@ library(lubridate)
 library(data.table)
 
 tests <- readRDS("rdas/raw-tests.rds")
+## Remove data entry errors with test data before the test was order
+tests <- tests[collectedDate <= orderCreatedAt]
+
+## Converting ID to factor
+tests[, patientId := factor(patientId)]
 
 ## Convert times to GMT to Puerto Rico time
 cols <- c("collectedDate", "reportedDate", "orderCreatedAt", "resultCreatedAt")
@@ -43,7 +48,6 @@ tests[, day := as.numeric(as_date(collectedDate)) - as.numeric(first_day) + 1]
 
 tests <- tests[!is.na(day)]
 tests <- tests[day >= 1]
-
 ## Number of positive tests and number of negative tests
 tests <- tests[, npos := sum(result), keyby = patientId]
 tests <- tests[, nneg := sum(!result), keyby = patientId]
