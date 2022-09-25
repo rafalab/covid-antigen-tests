@@ -55,10 +55,19 @@ tests <- tests[, nneg := sum(!result), keyby = patientId]
 ## RI: define a function that computes minium distance between any two positives
 ## RI: then clusters infections  into groups
 cluster_infections <- function(x, gap = 60){
-  dist <- outer(x, x, FUN = "-") ##distance between each test
-  dist[upper.tri(dist, diag = TRUE)] <- NA #we only care about comparison to future tests not past tests
-  dist <- matrixStats::rowMins(dist, na.rm=TRUE) #take smallest distance for each test
-  return(cumsum(dist >= gap)) #if new infections use new number
+  y <- vector("logical", length(x))
+  y[1] <- TRUE
+  ind <- seq_along(x)
+  d <- x - x[1]
+  keep <- d >= gap
+  while(any(keep)){
+    x <- x[keep]
+    ind <- ind[keep]
+    y[ind[1]] <- TRUE
+    d <- x - x[1]
+    keep <- d >= gap
+  } 
+  return(cumsum(y))
 }
 ## cluster positive tests into infections if they are within 60 days of each other
 ## The code easily permits changing 60 to some other length of time
